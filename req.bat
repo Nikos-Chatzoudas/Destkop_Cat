@@ -1,1 +1,1 @@
-pip install pygame pypiwin32
+pip install pygame pypiwin32 pyqt5
