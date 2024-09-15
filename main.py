@@ -1,3 +1,5 @@
+import os
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import pygame
 import sys
 import win32api
@@ -55,6 +57,8 @@ class Pet:
         self.next_action_time = time.time() + random.uniform(2, 5)
         self.last_interaction_time = time.time()
         self.is_dragging = False
+        self.windows_to_draw = []
+        self.drawing_windows = False
         self.sit()
     
     def load_frames(self, state, direction='r'):
@@ -165,7 +169,7 @@ class Pet:
 
     def update_state(self):
         current_time = time.time()
-        if current_time >= self.next_action_time and not self.is_dragging:
+        if current_time >= self.next_action_time and not self.is_dragging and not self.drawing_windows:
             if self.state == "sitting":
                 if random.random() < 0.7:
                     self.move_to_random_position()
@@ -202,28 +206,86 @@ class Pet:
     def interact(self):
         self.sit()
         self.last_interaction_time = time.time()
+        pet.start_drawing_windows()
 
     def resume_random_behavior(self):
         self.is_dragging = False
         self.next_action_time = time.time() + random.uniform(1, 3)
         self.sit()
 
+    def start_drawing_windows(self):
+        self.windows_to_draw = []
+        side = random.choice(['top', 'left', 'right', 'bottom'])
+        
+        if side == 'top':
+            start_x = random.randint(0, screen_width - DRAGGED_WINDOW_SIZE)
+            start_y = -DRAGGED_WINDOW_SIZE
+        elif side == 'left':
+            start_x = -DRAGGED_WINDOW_SIZE
+            start_y = random.randint(0, screen_height - DRAGGED_WINDOW_SIZE)
+        elif side == 'right':
+            start_x = screen_width
+            start_y = random.randint(0, screen_height - DRAGGED_WINDOW_SIZE)
+        else:  # bottom
+            start_x = random.randint(0, screen_width - DRAGGED_WINDOW_SIZE)
+            start_y = screen_height
+
+        target_x = max(0, min(start_x, screen_width - DRAGGED_WINDOW_SIZE))
+        target_y = max(0, min(start_y, screen_height - DRAGGED_WINDOW_SIZE))
+        self.windows_to_draw.append((start_x, start_y, target_x, target_y))
+
+        self.drawing_windows = True
+        self.move_to(start_x, start_y)
+
+    def update_window_drawing(self, qt_app):
+        if self.drawing_windows and self.windows_to_draw:
+            if self.target_x is None and self.target_y is None:
+                start_x, start_y, target_x, target_y = self.windows_to_draw.pop(0)
+                new_window = create_window(self, qt_app, start_x, start_y, target_x, target_y)
+                windows.append(new_window)
+                if self.windows_to_draw:
+                    next_window = self.windows_to_draw[0]
+                    self.move_to(next_window[0], next_window[1])
+                else:
+                    self.drawing_windows = False
+                    self.resume_random_behavior()
+
 class QtWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, start_x, start_y, target_x, target_y):
         super().__init__()
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(DRAGGED_WINDOW_SIZE, DRAGGED_WINDOW_SIZE)
         self.setWindowTitle("meow")
         
         self.label = QLabel(self)
-        self.label.setPixmap(QPixmap("assets/images/1.png").scaled(DRAGGED_WINDOW_SIZE, DRAGGED_WINDOW_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         random_number = random.randint(1, 7)
         image_path = f"assets/images/{random_number}.png"
         self.label.setPixmap(QPixmap(image_path).scaled(DRAGGED_WINDOW_SIZE, DRAGGED_WINDOW_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         self.label.setAlignment(Qt.AlignCenter)
         self.setCentralWidget(self.label)
         self.setWindowFlags(Qt.WindowStaysOnTopHint)
+        self.move(start_x, start_y)
         self.show()
+
+        self.target_x = target_x
+        self.target_y = target_y
+        self.animation_timer = QTimer(self)
+        self.animation_timer.timeout.connect(self.animate_movement)
+        self.animation_timer.start(16)  # ~60 FPS
+
+    def animate_movement(self):
+        current_pos = self.pos()
+        x, y = current_pos.x(), current_pos.y()
+        
+        if x != self.target_x:
+            x += min(move_speed, abs(self.target_x - x)) * (1 if self.target_x > x else -1)
+        if y != self.target_y:
+            y += min(move_speed, abs(self.target_y - y)) * (1 if self.target_y > y else -1)
+        
+        self.move(x, y)
+        
+        if x == self.target_x and y == self.target_y:
+            self.animation_timer.stop()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -239,74 +301,18 @@ class QtApp(QApplication):
             self.quit()
         return super(QtApp, self).eventFilter(obj, event)
 
-def window(pet):
-    screen_width = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
-    screen_height = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
-
-    qt_app = QtApp.instance() or QtApp(sys.argv)
-    qt_window = QtWindow()
-
-    qt_window.move(screen_width, (screen_height - DRAGGED_WINDOW_SIZE) // 2)
-
-    pet_x = screen_width - SCREEN_WIDTH
-    pet_y = (screen_height - DRAGGED_WINDOW_SIZE) // 2 + DRAGGED_WINDOW_SIZE // 2 - SCREEN_HEIGHT // 2
-    pet.move_to(pet_x, pet_y)
-    pet.is_dragging = True
-
-    while pet.target_x is not None or pet.target_y is not None:
-        pet.update(0.016)
-        screen.fill((0, 0, 0, 0))
-        pet.draw(screen)
-        pygame.display.flip()
-        pygame.event.pump()
-        time.sleep(0.01)
-
-    drag_distance = DRAGGED_WINDOW_SIZE
-    for i in range(drag_distance):
-        x = screen_width - i
-        qt_window.move(x, (screen_height - DRAGGED_WINDOW_SIZE) // 2)
-        
-        pet_x = x - SCREEN_WIDTH
-        pet.move_to(pet_x, pet_y)
-        pet.update(0.016)
-        screen.fill((0, 0, 0, 0))
-        pet.draw(screen)
-        pygame.display.flip()
-        
-        qt_app.processEvents()
-        time.sleep(0.01)
-
-    random_move = random.choice([10, 20])
-    for i in range(random_move):
-        x = screen_width - drag_distance - i
-        qt_window.move(x, (screen_height - DRAGGED_WINDOW_SIZE) // 2)
-        
-        pet_x = x - SCREEN_WIDTH
-        pet.move_to(pet_x, pet_y)
-        
-        pet.update(0.016)
-        screen.fill((0, 0, 0, 0))
-        pet.draw(screen)
-        pygame.display.flip()
-        
-        qt_app.processEvents()
-        time.sleep(0.01)
-
-    pet.resume_random_behavior()
-
-    qt_window.show()
+def create_window(pet, qt_app, start_x, start_y, target_x, target_y):
+    qt_window = QtWindow(start_x, start_y, target_x, target_y)
     
-    while qt_window.isVisible():
-        qt_app.processEvents()
-        pygame.event.pump()
-        time.sleep(0.01)
-        
-        pet.update(0.016)
-        screen.fill((0, 0, 0, 0))
-        pet.draw(screen)
-        pygame.display.flip()
+    pet_x = target_x - SCREEN_WIDTH
+    pet_y = target_y + DRAGGED_WINDOW_SIZE // 2 - SCREEN_HEIGHT // 2
+    pet.move_to(pet_x, pet_y)
+
+    return qt_window
 
 pet = Pet()
+qt_app = QtApp(sys.argv)
+windows = []
 
 clock = pygame.time.Clock()
 running = True
@@ -317,14 +323,21 @@ while running:
         if event.type == pygame.QUIT:
             running = False
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            pet.interact()
-            window(pet)
+            if not pet.drawing_windows:
+                pet.interact()
+                
 
     pet.update(dt)
+    pet.update_window_drawing(qt_app)
 
     screen.fill((0, 0, 0, 0))
     pet.draw(screen)
     pygame.display.flip()
+
+    qt_app.processEvents()
+
+    # Remove closed windows from the list
+    windows = [window for window in windows if window.isVisible()]
 
 pygame.quit()
 sys.exit()
